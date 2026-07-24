@@ -172,7 +172,12 @@ llama_model_laguna::graph::graph(const llama_model & model, const llm_graph_para
 
     const float kq_scale = 1.0f / sqrtf(float(n_embd_head));
 
+    // DFlash may extract the final layer output (slot n_layer), which needs every token's row
+    const bool need_final_layer_inp =
+        cparams.embeddings_layer_inp.size() > (size_t) n_layer && cparams.embeddings_layer_inp[n_layer];
+
     for (int il = 0; il < n_layer; ++il) {
+        res->t_layer_inp[il] = inpL;
         const bool    is_swa_il   = hparams.is_swa(il);
         const int64_t n_head_il   = hparams.n_head(il);
         const int64_t n_head_kv_il = hparams.n_head_kv(il);
@@ -262,7 +267,7 @@ llama_model_laguna::graph::graph(const llama_model & model, const llm_graph_para
             cb(cur, "attn_o_proj", il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == n_layer - 1 && inp_out_ids && !need_final_layer_inp) {
             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -321,7 +326,13 @@ llama_model_laguna::graph::graph(const llama_model & model, const llm_graph_para
         inpL = cur;
     }
 
+    res->t_layer_inp[n_layer] = inpL; // final layer output, all rows
+
     cur = inpL;
+    if (inp_out_ids && need_final_layer_inp) {
+        // output-row filtering deferred from the last layer
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    }
     cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
     cb(cur, "result_norm", -1);
     res->t_embd = cur;

@@ -835,6 +835,8 @@ struct llama_model {
     struct ggml_tensor * lilicorr_anchor_out_head     = nullptr;
     struct ggml_tensor * lilicorr_anchor_out_head_b   = nullptr;
 
+    // dflash laguna: per-target-layer feature norms {n_embd, n_target_layers}
+    struct ggml_tensor * aux_norm_enc = nullptr;
 
     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
     std::vector<int32_t> target_layer_ids;

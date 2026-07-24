@@ -1596,6 +1596,10 @@ struct llama_model_dflash : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
+    // dflash.decoder_arch == "laguna": softplus attention gate, aux feature norms,
+    // input norm on the fused context. Absent = qwen3.
+    bool decoder_laguna = false;
+
     template <bool is_enc>
     struct graph : public llm_graph_context {
         graph(const llama_model & model, const llm_graph_params & params);
