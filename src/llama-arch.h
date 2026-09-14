@@ -840,6 +840,7 @@ struct LLM_KV {
 
     llm_arch arch;
     const char * suffix;
+    std::string arch_name_override; // arch name as written in the file, for aliased archs
 
     std::string operator()(llm_kv kv) const;
 };

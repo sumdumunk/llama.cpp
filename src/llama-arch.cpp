@@ -1171,7 +1171,8 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
 LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}
 
 std::string LLM_KV::operator()(llm_kv kv) const {
-    std::string name = ::format(LLM_KV_NAMES.at(kv), LLM_ARCH_NAMES.at(arch));
+    const char * arch_name = arch_name_override.empty() ? LLM_ARCH_NAMES.at(arch) : arch_name_override.c_str();
+    std::string name = ::format(LLM_KV_NAMES.at(kv), arch_name);
 
     if (suffix != nullptr) {
         name += ".";
@@ -1219,6 +1220,16 @@ llm_arch llm_arch_from_string(const std::string & name) {
     for (const auto & kv : LLM_ARCH_NAMES) { // NOLINT
         if (kv.second == name) {
             return kv.first;
+        }
+    }
+
+    // arch names used by published GGUFs
+    static const std::pair<const char *, llm_arch> kArchAliases[] = {
+        { "glm5next", LLM_ARCH_GLM5_NEXT }, // GLM-5.3-Flash
+    };
+    for (const auto & kv : kArchAliases) {
+        if (kv.first == name) {
+            return kv.second;
         }
     }
 

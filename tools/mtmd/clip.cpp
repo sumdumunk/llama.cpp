@@ -2000,9 +2000,22 @@ struct clip_model_loader {
                         hparams.n_merge = 2;
                         hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
-                        get_f32(KEY_SWIGLU_CLAMP, hparams.swiglu_clamp, true);
-                        get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels);
-                        get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels);
+                        // published GLM-5.3-Flash mmproj names it swiglu_limit
+                        get_f32(KEY_SWIGLU_CLAMP, hparams.swiglu_clamp, false);
+                        if (hparams.swiglu_clamp <= 0.0f) {
+                            get_f32("clip.vision.swiglu_limit", hparams.swiglu_clamp, true);
+                        }
+                        // and has no pixel bounds: use the fixed image_size input
+                        get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels, false);
+                        get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels, false);
+                        if (hparams.image_min_pixels <= 0 && hparams.image_max_pixels <= 0) {
+                            hparams.image_min_pixels = hparams.image_size * hparams.image_size;
+                            hparams.image_max_pixels = hparams.image_min_pixels;
+                        } else if (hparams.image_min_pixels <= 0) {
+                            hparams.image_min_pixels = hparams.image_max_pixels;
+                        } else if (hparams.image_max_pixels <= 0) {
+                            hparams.image_max_pixels = hparams.image_min_pixels;
+                        }
                         hparams.set_limit_image_tokens();
                         hparams.set_warmup_n_tokens(46*46); // avoid OOM on warmup
                     } break;
