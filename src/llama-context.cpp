@@ -587,6 +587,14 @@ llama_context::~llama_context() {
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
 
+    if (expert_upload.backend) {
+        ggml_backend_synchronize(expert_upload.backend);
+        ggml_backend_event_free(expert_upload.ev_split);
+        ggml_backend_event_free(expert_upload.ev_upload);
+        ggml_backend_free(expert_upload.backend);
+        expert_upload.backend = nullptr;
+    }
+
     // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
     if (!model.no_alloc() && !opt_ctx) {
         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
@@ -2804,6 +2812,53 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
 
     const int64_t n_expert    = src->ne[2];
     const size_t  expert_size = src->nb[2];
+
+    // GGML_SCHED_PREFETCH_EXPERTS: at large batch nearly every expert is used, so skip the ids
+    // readback and upload the whole tensor on a second stream. The MoE cache takes precedence.
+    if (!lctx->moe_cache && ids->ne[0]*ids->ne[1] >= 2*n_expert) {
+        auto & eu = lctx->expert_upload;
+
+        if (!eu.tried) {
+            eu.tried = true;
+
+            const char * GGML_SCHED_PREFETCH_EXPERTS = getenv("GGML_SCHED_PREFETCH_EXPERTS");
+            if (GGML_SCHED_PREFETCH_EXPERTS && atoi(GGML_SCHED_PREFETCH_EXPERTS)) {
+                ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+
+                ggml_backend_dev_props props;
+                ggml_backend_dev_get_props(dev, &props);
+
+                if (props.caps.async && props.caps.events) {
+                    eu.backend   = ggml_backend_dev_init(dev, NULL);
+                    eu.ev_split  = ggml_backend_event_new(dev);
+                    eu.ev_upload = ggml_backend_event_new(dev);
+                }
+
+                if (!eu.backend || !eu.ev_split || !eu.ev_upload) {
+                    LLAMA_LOG_WARN("%s: full expert upload disabled (no second backend or events)\n", __func__);
+                    ggml_backend_event_free(eu.ev_split);
+                    ggml_backend_event_free(eu.ev_upload);
+                    ggml_backend_free(eu.backend);
+                    eu.backend   = nullptr;
+                    eu.ev_split  = nullptr;
+                    eu.ev_upload = nullptr;
+                }
+            }
+        }
+
+        if (eu.backend) {
+            // dst may still be read by work queued on the compute backend
+            ggml_backend_event_record(eu.ev_split, backend);
+            ggml_backend_event_wait(eu.backend, eu.ev_split);
+
+            ggml_backend_tensor_set_async(eu.backend, dst, src->data, 0, ggml_nbytes(src));
+
+            ggml_backend_event_record(eu.ev_upload, eu.backend);
+            ggml_backend_event_wait(backend, eu.ev_upload);
+
+            return true;
+        }
+    }
 
     if (ids != st.ids || (int64_t) st.used.size() != n_expert) {
         st.ids_data.resize(ggml_nbytes(ids)/sizeof(int32_t));

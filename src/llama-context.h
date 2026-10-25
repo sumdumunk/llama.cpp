@@ -387,6 +387,16 @@ private:
 
     copy_experts_info copy_experts;
 
+    // full expert upload on a second stream (GGML_SCHED_PREFETCH_EXPERTS), per context
+    struct expert_upload_info {
+        ggml_backend_t       backend   = nullptr;
+        ggml_backend_event_t ev_split  = nullptr; // upload waits for queued compute
+        ggml_backend_event_t ev_upload = nullptr; // compute waits for the upload
+        bool                 tried     = false;
+    };
+
+    expert_upload_info expert_upload;
+
     // graph reallocations during inference where the backend assignments did not change, split by whether the
     // graph size is the same as the previously scheduled one (unexpected) or different
     int32_t n_reallocs_same = 0;
