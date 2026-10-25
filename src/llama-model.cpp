@@ -1259,7 +1259,11 @@ static buft_list_t make_gpu_buft_list(ggml_backend_dev_t dev, llama_split_mode s
 
 struct llama_model::impl {
     impl() = default;
-    ~impl() = default;
+    ~impl() {
+        for (auto & pin : host_pins) {
+            pin.unreg_fn(pin.base);
+        }
+    }
 
     uint64_t n_elements = 0;
 
@@ -1278,6 +1282,14 @@ struct llama_model::impl {
 
     // contexts where the model tensors metadata is stored as well as the corresponding buffers:
     std::vector<std::pair<ggml_context_ptr, std::vector<ggml_backend_buffer_ptr>>> ctxs_bufs;
+
+    // CPU weight buffers pinned via GGML_CUDA_REGISTER_HOST, unpinned before ctxs_bufs is freed
+    struct host_pin {
+        void * base;
+        size_t size;
+        void (*unreg_fn)(void *);
+    };
+    std::vector<host_pin> host_pins;
 
     buft_list_t cpu_buft_list;
     std::map<ggml_backend_dev_t, buft_list_t> gpu_buft_list;
@@ -2051,6 +2063,42 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     for (auto & [ctx, bufs] : ctx_bufs) {
         if (!ml.load_all_data(ctx, bufs, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
             return false;
+        }
+    }
+
+    // without mmap, pin the CPU backend's weight buffers (the mmap path is pinned in load_all_data).
+    // register_host_buffer fails unless GGML_CUDA_REGISTER_HOST is set.
+    if (!ml.use_mmap) {
+        bool (*reg_fn)(void *, size_t) = nullptr;
+        void (*unreg_fn)(void *)       = nullptr;
+        for (size_t i = 0; i < ggml_backend_dev_count() && !reg_fn; i++) {
+            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_dev_get(i));
+            reg_fn   = (bool (*)(void *, size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_register_host_buffer");
+            unreg_fn = (void (*)(void *))         ggml_backend_reg_get_proc_address(reg, "ggml_backend_unregister_host_buffer");
+        }
+        if (reg_fn && unreg_fn) {
+            for (const auto & [ctx_ptr, bufs] : pimpl->ctxs_bufs) {
+                for (const auto & buf : bufs) {
+                    if (!buf || !ggml_backend_buffer_is_host(buf.get())) {
+                        continue;
+                    }
+                    if (ggml_backend_buffer_get_usage(buf.get()) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
+                        continue;
+                    }
+                    // device host buffers are already pinned
+                    if (ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buf.get()))) {
+                        continue;
+                    }
+                    const size_t n_register = ggml_backend_buffer_get_size(buf.get());
+                    const bool registered = n_register != 0 && reg_fn(ggml_backend_buffer_get_base(buf.get()), n_register);
+                    if (!registered) {
+                        continue;
+                    }
+                    pimpl->host_pins.push_back({ggml_backend_buffer_get_base(buf.get()), n_register, unreg_fn});
+                    LLAMA_LOG_INFO("%s: pinned %.2f MiB of CPU model buffer for faster H2D transfers\n",
+                            __func__, n_register / 1024.0 / 1024.0);
+                }
+            }
         }
     }
 
